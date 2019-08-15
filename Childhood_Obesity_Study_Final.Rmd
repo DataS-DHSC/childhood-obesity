@@ -1,0 +1,1035 @@
+---
+title: "Childhood Obesity Study"
+author: "Emily White"
+date: "30/07/2019 - 09/08/2019"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+    toc_depth: 2
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Packages Required
+library(knitr)
+library(ggplot2) # plots
+library(tidyr)
+library(fingertipsR) # data sourcing
+library(tidyverse)
+library(stringr)
+library(plotly) # interactive plots
+library(purrr) # reduce function
+library(tm) # remove words function
+library(corrplot) # correlation plots
+library(car) # VIF tests
+library(leaps) # stepwise regression
+library(reshape2) # melt function
+library(Hmisc) # correlation calculations
+```
+
+# Introduction
+
+### Why I chose this topic?
+
+**Problems with Obesity, specifically child obesity**
+
+"*There is concern about the rise of childhood obesity and the implications of such obesity persisting into adulthood. The risk of obesity in adulthood and risk of future obesity-related ill health are greater as children get older. Studies tracking child obesity into adulthood have found that the probability of overweight and obese children becoming overweight or obese adults increases with age. The health consequences of childhood obesity include: increased blood lipids, glucose intolerance, Type 2 diabetes, hypertension, increases in liver enzymes associated with fatty liver, exacerbation of conditions such as asthma and psychological problems such as social isolation, low self-esteem, teasing and bullying.*"
+
+ <font size="1"> Source: https://fingertips.phe.org.uk/profile/national-child-measurement-programme/data#page/6/gid/8000011/pat/6/par/E12000004/ati/101/are/E07000032/iid/93458/age/201/sex/4 </font>
+
+# Aims
+
+
+The aims of this project are:
+
+* **Identify the most influencing factors for childhood obesity for children in in Year 6 (age 10/11 in 2017/18)**  
+  
+    + How do these vary by local area?
+  
+```{r echo=FALSE, message=FALSE, warning=FALSE, quietly=TRUE}
+source("map.R")
+makemap()
+```
+
+Childhood obesity in 2017/18 ranges from 11.37% in Richmond upon Thames to 29.66% in Barking and Dagenham.
+  
+* **Determine if different factors effect the prevalence of obesity at Reception for the same cohort of children (age 5/6 in 2010/11) within the same local area**  
+  
+    + Are these different and does this explain the increase in childhood obesity from Reception to Year 6?
+
+```{r, include = FALSE}
+# Creating Graph
+
+#Loading Data ------------------------------------------------------------------------
+
+# Selecting Time Data for Year R Obesity
+YRtime <- fingertips_data(IndicatorID = 90319)
+YRtime <- YRtime %>%
+  filter(AreaType == "England", Sex == "Persons") %>%           # Filter to select England values
+  select(Timeperiod, Value)                                     # Only Select Value and Time Period
+colnames(YRtime)[colnames(YRtime) == "Value"] <- "Year R"       # Rename Value
+
+# Selecting Time Data for Year 6 Obesity
+Y6time <- fingertips_data(IndicatorID = 90323)
+Y6time <- Y6time %>%
+  filter(AreaType == "England", Sex == "Persons") %>%           # Filter to select England values
+  select(Value, Timeperiod)                                     # Only Select Value and Time Period
+colnames(Y6time)[colnames(Y6time) == "Value"] <- "Year 6"       # Rename Value
+
+# Merging into a data frame
+time_data <- list(YRtime, Y6time) %>% reduce(left_join, by = "Timeperiod")    # Create a data frame with both values, joined by area name 
+
+# transforming the data frame
+time_data <- time_data %>%    
+  gather(key = "Year", value = "Obesity Level", -Timeperiod)    # Combine the value columns into 1 and create a Year column
+
+#Graph ---------------------------------------------------------------------------------
+
+# Function to generate every n iterations (for graph x axis plotting)
+every_nth <- function(n) {
+  return(function(x) {
+    x[c(TRUE, rep(FALSE, n - 1))]     # Returns True every n times, false otherwise
+  })
+}
+
+# Plotting the graph of obesity against time
+a <- ggplot(data = time_data,                                               
+            mapping = aes(x = Timeperiod,                                   # X values are the time period
+                          y = `Obesity Level`,                              # Y values are the obesity level
+                          group = Year,                                     # Data grouped based on school year 
+                          color = Year,                                     # Different colour for each school year
+                          linetype = Year)) +                               # Different line type for each school year
+  xlab("Time Period") +                                                     # X axis title
+  ylab("Childhood Obesity Level") +                                         # Y axis title
+  labs(title = "Childhood Obesity Values for Reception and Year 6") +       # Graph Title
+  geom_line(size = 0.75) +                                                  # Adds line of size 0.75
+  geom_point() +                                                            # Adds points to graph
+  scale_x_discrete(breaks = every_nth(n = 2)) +                             # Only shows every other time period on x axis
+  theme(plot.title = element_text(hjust = 0.5)) +                           # Makes title central
+  expand_limits(y = 5)                                                      # Starts the y axis at y=5
+```
+
+```{r, echo = FALSE}
+# Plotting the interactive graph
+ggplotly(a, tooltip = c("Timeperiod", "Obesity Level"))
+```
+
+In 2010/11, the obesity levels for Reception pupils was 9.44%. In 2017/18, when the same cohort of pupils were in Year 6, the measured levels of childhood obeisty had increased to 20.14%
+  
+I have chosen to do this on local authority level as this is gives 152 different areas to model whilst ensuring there is still ample data available at this denomination. Local authorities are also responsible for local schools and allocating spending within the area so give a good variation of different spending allocations/policies the findings could be used to explore. 
+
+# Structure of Analysis
+
+- Importing the data  
+- Cleaning data, checking for missing variables  
+- **Exploratory Data Analysis**  
+- **Analysis**
+- **Model Evaluation**
+- Findings
+- Final Thoughts
+  
+  
+# Viewing the Fingertips Data
+
+```{r echo=T, results='hide'}
+# Viewing the indicator ID and area type ID for all the fingertips data
+indicators <- indicators()
+areatypes <- area_types()
+```
+All of the indicators can be seen using (View(indicators)), it is then easy to search for any specific indicator
+
+```{r}
+# Use this function to view the indicator name for any indicator ID
+ind <- function(a) {
+  g <- as_tibble(indicator_metadata(a)[, 2]) %>%
+    filter(row_number() == 1) %>%
+    pull(Indicator)
+  cat(g)
+}
+```
+
+```{r}
+# Use this function to view the indicator definition for any indicator ID
+def <- function(a) {
+  g <- as_tibble(indicator_metadata(a)[, 3]) %>%
+    filter(row_number() == 1) %>%
+    pull(Definition)
+  cat(g)
+}
+```
+
+```{r echo=T}
+#' Use this function to extract the Value and Time period data for a specific indicator ID and area code.
+
+#' @param a Indicator ID number
+#' @param b Area Type ID number
+
+#' @return function returns a dataframe containing the Area Name, Indicator Value and Time Period
+
+datacollection <- function(a, b) {
+  e <- fingertips_data(IndicatorID = a, AreaTypeID = b)
+  
+  e <- e %>%
+    filter(AreaType == "County & UA") %>%                   # selects all data with County and UA as its area
+    select(AreaName, Value, Timeperiod, IndicatorName)      # selects only the columns of interest
+  
+  colnames(e)[colnames(e) == "Value"] <- e[4, 4]            # renames the column name value with the Indicator Name
+  e <- e[-4]                                                # removes the indicator name column
+  
+  # simplifying the names
+  
+  names(e) <- names(e) %>% 
+              {gsub("\\s*\\([^\\)]+\\)", "", .) } %>%      # removes any text in brackets
+              {gsub(", ", "", .) } %>%                     # removes commas
+              {gsub("- ", "", .) } %>%                     # removes -
+              {gsub("\\s+$", "", .) } %>%                  # removes spaces at the end of name
+              {gsub(" ", "_", .) } %>%                     # replaces all spaces with underscores
+              {gsub(":", "", .) } %>%                      # removes colons
+              {tolower(.) }                                # makes names lowercase
+  e
+}
+```
+
+```{r include = FALSE}
+#' Use this function to extract the Value and Time period data for a specific indicator ID and area code when the Age needs filtering
+
+#' @param a Indicator ID number
+#' @param b Area Type ID number
+#' @param d Age 
+
+#' @return function returns a dataframe containing the Area Name, Indicator Value and Time Period
+
+datacollectionage <- function(a, b, d) {
+  e <- fingertips_data(IndicatorID = a, AreaTypeID = b)
+  
+  e <- e %>%
+    filter(AreaType == "County & UA",                       # selects all data with County and UA as its area
+           Age == d) %>%                                    # selects all data with age "d"
+    select(AreaName, Value, Timeperiod, IndicatorName)      # selects only the columns of interest
+  
+  colnames(e)[colnames(e) == "Value"] <- e[4, 4]            # renames the column name value with the Indicator Name
+  e <- e[-4]                                                # removes the indicator name column
+  
+  # simplifying the names
+  
+  names(e) <- names(e) %>% 
+              {gsub("\\s*\\([^\\)]+\\)", "", .) } %>%      # removes any text in brackets
+              {gsub(", ", "", .) } %>%                     # removes commas
+              {gsub("- ", "", .) } %>%                     # removes -
+              {gsub("\\s+$", "", .) } %>%                  # removes spaces at the end of name
+              {gsub(" ", "_", .) } %>%                     # replaces all spaces with underscores
+              {gsub(":", "", .) } %>%                      # removes colons
+              {tolower(.) }                                # makes names lowercase
+  e
+}
+```
+
+```{r include = FALSE}
+#' Use this function to extract the Value and Time period data for a specific indicator ID and area code when the Sex needs filtering
+
+#' @param a Indicator ID number
+#' @param b Area Type ID number
+
+#' @return function returns a dataframe containing the Area Name, Indicator Value and Time Period
+
+datacollectionsex <- function(a, b) {
+  e <- fingertips_data(IndicatorID = a, AreaTypeID = b)
+  
+  e <- e %>%
+    filter(AreaType == "County & UA",                       # selects all data with County and UA as its area
+           Sex == "Persons") %>%                 # selects all data with Primary school age
+    select(AreaName, Value, Timeperiod, IndicatorName)      # selects only the columns of interest
+  
+  colnames(e)[colnames(e) == "Value"] <- e[4, 4]            # renames the column name value with the Indicator Name
+  e <- e[-4]                                                # removes the indicator name column
+  
+  # simplifying the names
+  
+  names(e) <- names(e) %>% 
+              {gsub("\\s*\\([^\\)]+\\)", "", .) } %>%      # removes any text in brackets
+              {gsub(", ", "", .) } %>%                     # removes commas
+              {gsub("- ", "", .) } %>%                     # removes -
+              {gsub("\\s+$", "", .) } %>%                  # removes spaces at the end of name
+              {gsub(" ", "_", .) } %>%                     # replaces all spaces with underscores
+              {gsub(":", "", .) } %>%                      # removes colons
+              {tolower(.) }                                # makes names lowercase
+  e
+}
+```
+
+```{r echo=T, results='hide'}
+# Use this function to select a specific time frame
+dateselector <- function(a, b) {    # takes data and a date
+  d <- a %>%
+    filter(timeperiod == b)         # filters the data to only show the required time frame
+  d <- d[-3]                        # removes the TimePeriod column
+}
+```
+
+
+# Loading the Data
+
+## Prevalence of Obesity 
+
+These are the variables I would like to model:
+
+**Reception: Prevalence of obesity (including severe obesity)** measured by the BMI greater than or equal to the 95th centile of the UK90 growth reference among children in Reception (age 4-5 years)   
+
+```{r}
+# Reception: Prevalence of Obesity
+# (Indicator ID:90319)
+Reception_Obesity <- datacollection(90319, 102)                         # selecting the data
+Reception_Obesity[2] <- round(Reception_Obesity[2], 10)                 # rounding data
+Reception_Obesity <- dateselector(Reception_Obesity, "2010/11")         # selecting only 2010/11 values
+```
+
+**Year 6: Prevalence of obesity (including severe obesity)** measured by BMI greater than or equal to the 95th centile of the UK90 growth reference among children in Year 6 (age 10-11 years)  
+
+```{r}
+# Year 6 Prevalence of Obesity
+# (Indicator ID:90323)
+Y6_Obesity <- datacollection(90323, 102)                # selecting the data
+Y6_Obesity[2] <- round(Y6_Obesity[2], 10)               # rounding data
+Y6_Obesity <- dateselector(Y6_Obesity, "2017/18")       # selecting only 2017/18 values
+```
+
+## Possible Explanatory Variables 
+These are the variables I would like to use to predict childhood obesity:
+
+**School Readiness: the percentage of children achieving a good level of development at the end of reception**.  
+Children are defined as having reached a good level of development if they achieve at least the expected level in the early learning goals in the prime areas of learning and the early learning goals in the specific areas of mathematics and literacy.  
+  
+* Using 2012/13 data as this is the earliest available (closest to 2010/11)
+
+```{r}
+# School Readiness
+# (Indicator ID:90631)
+School_Readiness <- datacollectionsex(90631, 102)               # selecting the data
+School_Readiness <- dateselector(School_Readiness, "2012/13")   # selecting only 2012/13 values
+```
+
+
+**Children with one or more decayed, missing or filled teeth** at age 3  
+  
+* There is another indicator of decayed, missing or filled teeth at age 5 however this had more missing values so I chose to use the age 3 data.  
+* Using 2012/13 data as this is the only time period available
+```{r}
+# Tooth Decay Data
+# (Indicator ID:92501)  
+Tooth_Decay <- datacollection(92501, 102)             # selecting the data
+Tooth_Decay <- dateselector(Tooth_Decay, "2012/13")   # selecting only 2012/13 values
+```
+
+```{r echo=T, results='hide'}
+# Imputting missing values manually using corresponding values for the Area
+Tooth_Decay <- Tooth_Decay %>%
+  # London
+  mutate(dmft_in_three_year_olds = replace(dmft_in_three_year_olds, areaname == "Greenwich", 0.42371163)) %>%
+  mutate(dmft_in_three_year_olds = replace(dmft_in_three_year_olds, areaname == "Bexley", 0.42371163)) %>%
+  mutate(dmft_in_three_year_olds = replace(dmft_in_three_year_olds, areaname == "Waltham Forest", 0.42371163)) %>%
+  mutate(dmft_in_three_year_olds = replace(dmft_in_three_year_olds, areaname == "Islington", 0.42371163)) %>%
+  # South East
+  mutate(dmft_in_three_year_olds = replace(dmft_in_three_year_olds, areaname == "East Sussex", 0.27081672)) %>%
+  # East Midlands
+  mutate(dmft_in_three_year_olds = replace(dmft_in_three_year_olds, areaname == "Lincolnshire", 0.43444082)) %>%
+  # South West
+  mutate(dmft_in_three_year_olds = replace(dmft_in_three_year_olds, areaname == "Bath and North East Somerset", 0.30771022))
+```
+
+
+**Deprivation score (IMD 2015)** (measures of multiple deprivation at the small area level)  
+   
+* Using 2015 data as this is the only time period available
+```{r}
+# Deprivation Score
+# (Indicator ID:91872)  
+Deprivation_Score <- datacollection(91872, 102)               # selecting the data
+Deprivation_Score <- dateselector(Deprivation_Score, "2015")  # selecting 2015 values
+```
+
+**Persistent absentees - Primary school** Percentage of primary school enrolments classed as persistent absentees (defined as missing 10% or more of possible sessions).  
+   
+* Using 2014/15 data as this is the earliest available and close to the middle of 2010/11 and 2017/18
+```{r}
+# Persistent Absentees
+# (Indicator ID:92563)
+Persistent_Absentees <- datacollection(92563, 102)                      # selecting the data
+Persistent_Absentees <- dateselector(Persistent_Absentees, "2014/15")   # selecting 2014/15 values
+```
+
+**Children in low income families aged 5 to 10** - The number of children aged between 5 and 10 in a family which is in receipt of Working Tax Credits, Child Tax Credits, Income Support, or Jobseekers Allowance.  
+   
+* 2013 data, close to the middle of 2010/11 and 2017/18 and latest time available
+```{r}
+# Low Income Familes
+# (Indicator ID:92479)
+Low_Income_Families <- datacollectionage(92479, 102, "5-10 yrs")        # selecting the data
+Low_Income_Families <- dateselector(Low_Income_Families, "2013")        # selecting 2013 values
+```
+
+**Admissions for diabetes for children and young people aged under 19 years**  
+    
+* A better indicator could be Admissions for diabetes for children aged 0 - 5 however this had a lot of missing values.  
+* Using 2016/17 data used as this is the most recent
+```{r}
+# Diabetes
+# (Indicator ID:92622)
+Diabetes <- datacollection(92622, 102)            # selecting the data
+Diabetes <- dateselector(Diabetes, "2016/17")     # selecting 2016/17 values
+
+# Replacing missing value for Derby with 2015/16 value
+Diabetes <- Diabetes %>%
+  mutate(admissions_for_diabetes_for_children_and_young_people_aged_under_19_years = replace(admissions_for_diabetes_for_children_and_young_people_aged_under_19_years, areaname == "Derby", 46.80666))
+```
+
+
+**School pupils with social, emotional and mental health needs: % of school pupils with social, emotional and mental health needs (Primary school age)**  
+  
+* 2018 data used as it is the latest value available
+```{r}
+# Social Health Needs
+# (Indicator ID:91871)  
+Social_Health_Needs <- datacollectionage(91871, 102, "Primary school age")    # selecting the data
+Social_Health_Needs <- dateselector(Social_Health_Needs, "2018")              # selecting 2018 values
+```
+
+
+**Free school meals: % uptake among all pupils (Primary school age)**  
+  
+* Using 2013 data 
+
+```{r}
+# Free school meals
+# (Indicator ID: 90922) 
+FreeSchoolMeals <- datacollectionage(90922, 102, "Primary school age")      # selecting the data
+FreeSchoolMeals <- dateselector(FreeSchoolMeals, "2013")                    # selecting 2013 values
+```
+
+**Obesity: QOF prevalence (18+):** Patients aged 18 and over with a BMI of 30 or above  
+  
+* 2017/18 data used as it is the only time period available
+```{r}
+# Obesity 18+
+#(Indicator ID: 92588) 
+Obesity18plus <- datacollection(92588, 102)                   # selecting the data
+Obesity18plus <- dateselector(Obesity18plus, "2017/18")       # selecting 2017/18 values
+```
+
+
+**Gender Pay equality** - Gross median hourly pay, excluding overtime, for women  
+   
+* 2015 data used as it is the only time period available
+```{r}
+# Gender Pay Equality
+# (Indicator ID: 92817) 
+GenderPayEquality <- datacollection(92817, 102)     # selecting the data
+GenderPayEquality <- GenderPayEquality[-3]          # removing time period column as only 1 timeperiod available
+
+# Replace missing value for Kensington and Chelsea with average of Hammersmith and Fulham and Westminster
+# calculating the average (89.37865+74.79319)/2 = 82.08592
+GenderPayEquality <- GenderPayEquality %>%
+  mutate(gender_pay_equality = replace(gender_pay_equality, areaname == "Kensington and Chelsea", 82.08592))
+```
+
+**Percentage of physically active adults**  
+  
+* 2015/16 data used as it is the earliest time period available
+```{r}
+# Physically active adults
+# (Indicator ID: 93014)
+ActiveAdults <- datacollection(93014, 102)              # selecting the data
+ActiveAdults <- dateselector(ActiveAdults, "2015/16")   # selecting 2015/16 time period
+```
+
+**Breastfeeding initiation** - Measures the percentage of mothers who give their babies breast milk in the first 48 hours after delivery  
+  
+* Used 2010/11 (earliest on fingertips) data to be as close to the value when the pupils were born.  
+* Filled missing values with 2011/12 data for the missing values (and 2012/13 for West Sussex where the previous 2 years were unavailable)
+
+```{r}
+# Breastfeeding Initiation
+#(Indicator ID: 20201)  
+Breastfeeding <- datacollection(20201, 102)
+
+# selecting 2010/11, 2011/12 and 2012/13 Data
+Breastfeeding1011 <- dateselector(Breastfeeding, "2010/11")
+Breastfeeding1112 <- dateselector(Breastfeeding, "2011/12")
+Breastfeeding1213 <- dateselector(Breastfeeding, "2012/13")
+
+# merging these together into 1 data frame
+Breastfeeding2 <- list(Breastfeeding1011, Breastfeeding1112, Breastfeeding1213) %>%
+  reduce(left_join, by = "areaname")
+
+# replacing all NA values for 2010/11 with the value for 2011/12
+Breastfeeding2 <- within(Breastfeeding2, breastfeeding_initiation.x <- ifelse(is.na(breastfeeding_initiation.x), breastfeeding_initiation.y, breastfeeding_initiation.x))
+
+# replacting NA value for 2010/11 that was not replaced by 2011/12 data with the 2012/13 data
+Breastfeeding2 <- within(Breastfeeding2, breastfeeding_initiation.x <- ifelse(is.na(breastfeeding_initiation.x), breastfeeding_initiation, breastfeeding_initiation.x))
+
+# selcting the newly filled 2010/11 column
+Breastfeeding <- select(Breastfeeding2, areaname, breastfeeding_initiation.x)
+
+# removing .x from column name
+names(Breastfeeding) <- gsub(".x", "", names(Breastfeeding))
+```
+
+
+**Population vaccination coverage** - MMR for one dose (5 years old)  
+  
+* 2010/11 data used as this is when the children were 5 years old
+```{r}
+# MMR Vaccination coverage
+# (Indicator ID: 30310)  
+Vaccination <- datacollection(30310, 102)               # Selecting the data
+Vaccination <- dateselector(Vaccination, "2010/11")     # Selecting 2010/11 values
+```
+
+**Infant mortality rate**  
+  
+* Child mortality rate might have been a better indicator however this had many missing values  
+* Used infant mortality rate instead however the data is only for 2007/09  
+ 
+```{r}
+# Infant Mortality Rate
+#(Indicator ID: 92196)
+Mortality <- datacollection(92196, 102)               # Selecting the data
+Mortality <- dateselector(Mortality, "2007 - 09")     # Selecting the time period
+```
+
+
+**The percentage of the total resident population who are 0-15 years of age**  
+  
+* Used 2017 time period as it is the only one available
+```{r}
+# Resident Population Aged 0 - 15
+# (Indicator ID: 93084)  
+residentpopulation <- datacollection(93084, 102)      # selecting the data
+residentpopulation <- residentpopulation[-3]          # removing time period column as only 2017 values available
+```
+
+**Access to woodland:** Percentage of the population in each local authority that has accessible woodland of at least 2 hectare within 500 metres of where they live  
+  
+* 2015 data used as it is the only data available
+* Missing Values of Barking & Dagenham and Islington  - Take an average of the surrounding boroughs. 
+```{r}
+# Woodland Access
+#(Indicator ID: 92814) 
+Woodland <- datacollection(92814, 102)    # collecting the data
+Woodland <- Woodland[-3]                  # removing time period column
+
+# Barking & Dagenham = Average of Bexley, Greenwich, Havering, Newham and Redbridge
+# (4.57+25.78+14.74+11.97+24.41)/5 = 16.294
+# Islington = Average of Camden, Hackney and Haringey
+# (5.95+9.87+8.66)/3 = 8.16
+Woodland <- Woodland %>%
+  mutate(access_to_woodland = replace(access_to_woodland, areaname == "Barking and Dagenham", 16.294)) %>%
+  mutate(access_to_woodland = replace(access_to_woodland, areaname == "Islington", 8.16))
+```
+
+**Admissions for asthma for children aged 0 to 9**  
+   
+* Using 2016/17 data and 2015/16 data for the missing values
+```{r}
+# Asthma Admissions
+# (Indicator ID: 92481) 
+Asthma <- datacollection(92481, 102)          # collecting the data
+Asthma1617 <- dateselector(Asthma, "2016/17") # selecting 2016/17 data
+Asthma1516 <- dateselector(Asthma, "2015/16") # selecting 2015/16 data
+
+Asthma2 <- list(Asthma1617, Asthma1516) %>%   # joining together both time values
+  reduce(left_join, by = "areaname")
+
+# replacing na in 2016/17 data with 2015/16 data
+Asthma2 <- within(Asthma2, admissions_for_asthma_for_children_aged_0_to_9.x <- ifelse(is.na(admissions_for_asthma_for_children_aged_0_to_9.x), admissions_for_asthma_for_children_aged_0_to_9.y, admissions_for_asthma_for_children_aged_0_to_9.x))
+
+# selecting filled column
+Asthma <- select(Asthma2, areaname, admissions_for_asthma_for_children_aged_0_to_9.x) 
+
+names(Asthma) <- gsub(".x", "", names(Asthma)) # removing .x from column name
+```
+
+
+**Admissions for gastroenteritis in infants aged 2, 3 and 4 years**  
+    
+* Using 2016/17 data and 2015/16 data for the missing values
+```{r}
+# Gastroenteritis Admissions
+# (Indicator ID: 92248)
+gastroenteritis <- datacollection(92248, 102)                     # collecting the data
+gastroenteritis1617 <- dateselector(gastroenteritis, "2016/17")   # selecting 2016/17 values
+gastroenteritis1516 <- dateselector(gastroenteritis, "2015/16")   # selecting 2015/16 values
+
+gastroenteritis2 <- list(gastroenteritis1617, gastroenteritis1516) %>%    # joining together both time values
+  reduce(left_join, by = "areaname")
+
+# replacing na in 2016/17 data with 2015/16 data
+gastroenteritis2 <- within(gastroenteritis2, admissions_for_gastroenteritis_in_infants_aged_23_and_4_years.x <- ifelse(is.na(admissions_for_gastroenteritis_in_infants_aged_23_and_4_years.x), admissions_for_gastroenteritis_in_infants_aged_23_and_4_years.y, admissions_for_gastroenteritis_in_infants_aged_23_and_4_years.x))
+
+ # selecting filled column
+gastroenteritis <- select(gastroenteritis2, areaname, admissions_for_gastroenteritis_in_infants_aged_23_and_4_years.x) 
+
+names(gastroenteritis) <- gsub("_in_infants_aged_23_and_4_years.x", "", names(gastroenteritis)) # renaming column
+```
+
+**Admissions for respiratory tract infections in infants aged under 1 year**  
+   
+* 2016/17 data used
+* Nottingham and Nottinghamshire missing due to errors with HES coding - Using 2015/16 data to fill these values
+```{r}
+# Admissions for Respiratory Tract Infections
+# (Indicator ID: 92253)
+respiratory <- datacollection(92251, 102)             # selecting the data
+respiratory <- dateselector(respiratory, "2016/17")   # selecting 2016/17 time period
+
+# Missing Data for Nottingham and Nottinghamshire
+
+# Nottingham
+respiratory <- respiratory %>%
+  mutate(admissions_for_respiratory_tract_infections_in_infants_aged_under_1_year = replace(admissions_for_respiratory_tract_infections_in_infants_aged_under_1_year, areaname == "Nottingham", 657.6448)) %>%
+  
+# Nottinghamshire
+  mutate(admissions_for_respiratory_tract_infections_in_infants_aged_under_1_year = replace(admissions_for_respiratory_tract_infections_in_infants_aged_under_1_year, areaname == "Nottinghamshire", 642.7746))
+```
+  
+**Parent Name**
+```{r}
+# Selecting the Parent Name
+Parent_Name <- fingertips_data(IndicatorID = 92814) %>%
+  filter(AreaType == "County & UA") %>%
+  select(AreaName, ParentName)
+names(Parent_Name) <- tolower(names(Parent_Name))
+```
+
+## Merging the Data
+
+```{r}
+# Merging the Data
+EDA_Data <-
+  list(
+    Parent_Name,
+    Reception_Obesity,
+    Y6_Obesity,
+    Deprivation_Score,
+    Persistent_Absentees,
+    Low_Income_Families,
+    School_Readiness,
+    Social_Health_Needs,
+    Diabetes,
+    Tooth_Decay,
+    Obesity18plus,
+    ActiveAdults,
+    Asthma,
+    Breastfeeding,
+    gastroenteritis,
+    Vaccination,
+    Mortality,
+    respiratory,
+    Woodland,
+    residentpopulation,
+    GenderPayEquality
+  ) %>%
+  purrr::reduce(left_join, by = "areaname")
+```
+**Adding the London Indicator**
+```{r}
+# London Indicator
+EDA_Data <- mutate(EDA_Data, london = ifelse(EDA_Data$parentname == "London region", 1, 0))
+
+# List of all Inner London Boroughs
+central <- c("Camden", "Greenwich", "Hackney", "Hammersmith and Fulham", "Islington", "Kensington and Chelsea", "Lambeth", "Lewisham", "Southwark", "Tower Hamlets", "Wandsworth", "Westminster" )
+
+# Central London Indicator
+EDA_Data <- mutate(EDA_Data, inner_london = ifelse(is.element(EDA_Data$areaname, central), 1, 0))
+```
+
+#### Dealing with final missing values
+
+```{r}
+# Replacing Missing value for Buckinghamshire prevalence of Obesity (18+) with South East Value of 8.313363
+EDA_Data <- EDA_Data %>%
+  mutate(obesity_qof_prevalence = replace(obesity_qof_prevalence, areaname == "Buckinghamshire", 8.313363))
+```
+
+```{r}
+# Removing City of London, Isles of Scilly and Torbay as they do not contain values for Childhood Obesity levels at age year 6 or reception.
+EDA_Data <- subset(EDA_Data, areaname != "City of London")
+EDA_Data <- subset(EDA_Data, areaname != "Isles of Scilly")
+EDA_Data <- subset(EDA_Data, areaname != "Torbay")
+
+# Removing Rutland as more than half of the data values are missing
+EDA_Data <- subset(EDA_Data, areaname != "Rutland")
+```
+
+```{r}
+# Simplifying Wording for parentname
+EDA_Data$parentname <- removeWords(EDA_Data$parentname, "region")
+EDA_Data$parentname <- removeWords(EDA_Data$parentname, " and the Humber")
+EDA_Data$parentname <- as.factor(EDA_Data$parentname)
+```
+
+# Exploratory Data Analysis
+
+## Exploring the relationship between the Childhood Obesity in Reception and Year 6
+
+
+```{r}
+# plotting reception against year 6 prevalence of obesty
+plot1 <- ggplot(EDA_Data, aes(x = reception_prevalence_of_obesity, y = year_6_prevalence_of_obesity, text = areaname)) +
+  geom_point() +
+  labs(title = "Prevalence of Obesity at Reception (Age 4/5) and Year 6 (Age 10/11)") +
+  xlab("Reception: Prevalence of Obesity 2010/11") +
+  ylab("Year 6: Prevalence of Obesity 2017/18") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggplotly(plot1)
+```
+
+```{r}
+# Plotting England Year 6 Prevalence of Obesity
+ggplot(EDA_Data, aes(x = "", y = year_6_prevalence_of_obesity)) +
+  stat_boxplot(geom = "errorbar", width = 0.1) +
+  geom_boxplot(width = 0.4, outlier.color = "red", outlier.shape = 1) +
+  geom_jitter(width = 0.15, size = 1) +
+  labs(title = "National Spread of Prevalence of Obesity (Age 10/11)") + 
+  xlab("England") +
+  ylab("Year 6 Prevalence of Obesity") +
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  coord_flip()
+```
+
+```{r}
+# Plotting regional variation in Year 6 Prevalence of Obesity
+ggplot(EDA_Data, aes(x = parentname, y = year_6_prevalence_of_obesity)) +
+  stat_boxplot(geom = "errorbar") +
+  geom_boxplot(outlier.color = "red", outlier.shape = 1) +
+  labs(title = "Regional Spread of Prevalence of Obesity (Age 10/11)") +
+  xlab("Region") +
+  ylab("Year 6 Prevalence of Obesity") +
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  coord_flip()
+```
+
+* Clear relationship between childhood obesity in Reception and Year 6 pupils however there is some regional difference  
+* The lowest 3 London values of Year 6 prevalence of obesity are outliers within the London region, however they are not outliers at a national level
+
+
+## Exploring the relationships between the predictive variables
+  
+Correlation Plot between the variables
+
+```{r}
+# Calculating Correlation Matrix
+correlation <- cor((select(EDA_Data, -"areaname", -"parentname", -"reception_prevalence_of_obesity", -"year_6_prevalence_of_obesity", -"london", -"inner_london")), use = "complete.obs")
+
+# Using Custom Labels as the variable names were too long
+
+colnames(correlation) <- c("Deprivation Score", "Persistent Abesentees", "Low Income Families", "School Readiness", "Social Health Needs", "Diabetes Admissions (0-9", "Decayed/Missing/Filled Teeth", "Obesity in 18+", "Physically Active Adults", "Asthma Admissions (0-9)", "Breastfeeding Initiation", "Gastroenteritis (2-4)", "MMR Vaccination (5)", "Child Mortality Rate", "Respiratory Infections (2-4)", "Woodland Access", "% Population Age 0-15", "Gender Pay Equity")
+
+rownames(correlation) <- c("Deprivation Score", "Persistent Abesentees", "Low Income Families", "School Readiness", "Social Health Needs", "Diabetes Admissions (0-9", "Decayed/Missing/Filled Teeth", "Obesity in 18+", "Physically Active Adults", "Asthma Admissions (0-9)", "Breastfeeding Initiation", "Gastroenteritis (2-4)", "MMR Vaccination (5)", "Child Mortality Rate", "Respiratory Infections (2-4)", "Woodland Access", "% Population Age 0-15", "Gender Pay Equity")
+
+# Plotting Correlation
+corrplot(correlation, method = "circle", type = "upper", tl.cex = 0.75, tl.col = "black")
+```
+  
+* This is a good visual aid for seeing correlation between the predictive variables however the table below is more useful to see the individual correlation relationships
+
+**Finding highest correlations between variables**
+
+```{r}
+# Shows biggest correlations
+correlation[upper.tri(correlation, diag = TRUE)] <- NA # sets upper half of correlation matrix to NA to avoid duplicates
+m <- melt(correlation) # collapsing the dataframe
+m <- m[order(-abs(m$value)), ] # ordering by correlation value (largest to smallest)
+m <- na.omit(m) # removing NAs
+head(m) # shows the top of the dataframe
+```
+This table shows the 6 largest correlation relationships  
+
+1. **Low Income Families and Deprivation Score**  
+* Correlation value of 0.954   
+* This is not surprising if we look at how the two variables are calculated:  
+    + *low income families* is the number of children aged between 5 and 10 in a family which is in receipt of Working Tax Credits, Child Tax Credits, Income Support, or Jobseekers Allowance.  
+    + IMD is comprised of Income Deprivation; Employment Deprivation; Education, Skills and Training Deprivation; Health Deprivation and Disability; Crime; Barriers to Housing and Service; and Living Environmental Deprivation.  
+      
+While low income families is more closely related to children in an area, I chose to remove this predictive variable in favour of Deprivation score as this encompassed more measures of deprivation in more detail than the low income families indicator.
+
+2. **Breastfeeding Initiation and Adult Obesity**  
+```{r}
+# plotting breastfeeding initiation against adult obesity
+ggplot(EDA_Data, aes(x = breastfeeding_initiation, 
+                     y = obesity_qof_prevalence)) +     
+  geom_point() +                                        # adding points
+  xlab("Breastfeeding Initiation") +                    # adding x axis label
+  ylab("Obesity 18+") +                                 # adding y axis label
+  stat_smooth(method = "lm", col = "darkblue", se = F)  # adding linear model line
+```
+  
+* Correlation value of -0.796  
+* There is a clear relationship between breastfeeding and prevalence of adult obesity in a local area.  
+* *"Observational studies have shown that breastfeeding is associated with lower levels of child obesity."* - As this relationship is known, I think it is important to keep both variables in my analysis, despite their high correlation value.  
+* There is also evidence that babies who are breast fed experience lower levels of gastro-intestinal and respiratory infection which could explain the high correlation value between these variables
+
+  
+**Breastfeeding Initiation and Population MMR Vaccination Coverage**
+
+```{r}
+# Plotting breastfeeding initiation against MMR vaccination coverage
+ggplot(EDA_Data, aes(x = (breastfeeding_initiation),                             # plotting breastfeeding initiation on x axis 
+                     y = population_vaccination_coverage_mmr_for_one_dose)) +    # plotting MMR Vaccination on y axis
+  geom_point(aes(color = parentname)) +                                          # colouring the points by region
+  labs(color = "Region") +                                                       # adding the ledgend 
+  xlab("Breastfeeding Initiation") +                                             # x axis label
+  ylab("MMR Vaccination Population Coverage")                                    # y axis label
+```
+  
+* Correlation value of -0.543  
+* Surprising correlation between these two variables, wouldn't necessarily expect a correlation
+* The London Variation in MMR Population Coverage supports the addition of a London Indicator  
+
+  
+```{r}
+# plotting regional spread of MMR Vaccination coverage
+ggplot(EDA_Data, aes(x = parentname, y = population_vaccination_coverage_mmr_for_one_dose)) + # plotting Vaccination rates against Region
+  stat_boxplot(geom = "errorbar") +                                                           # adding end bars
+  geom_boxplot(outlier.color = "red", outlier.shape = 1) +                                    # colouring outliers red circles
+  xlab("Region") +                                                                            # X axis label
+  ylab("MMR Vaccination") +                                                                   # Y axis label
+  coord_flip()                                                                                # flipping the axis
+```
+  
+* The lack of variation in values for MMR Vaccination coverage excluding London suggests removing this variable  
+
+#Analysis plan  
+  
+Revisiting the aims:  
+*Identify the most influencing factors for childhood obesity for children in in Year 6 (age 10/11 in 2017/18)  
+  *How do these vary by local area?*
+    
+  **Do this by creating an explanatory linear model to determine the most important predictors for modelling Year 6 obesity**
+  
+  
+*Determine if different factors effect the prevalence of obesity at Reception for the same cohort of children (age 5/6 in 2010/11) within the same local area  
+  *Are these different and does this explain the increase in childhood obesity from Reception to Year 6?* 
+    
+  **Do this by creating another explanatory linear model for reception in 2010/11 and comparing the important predictors with the previous model**
+
+
+# Modelling
+
+## Year 6 Obesity
+  
+```{r}
+#Selecting the variables to model (ignoring Region and variables removed earlier in EDA)
+model_data <- select(EDA_Data, -parentname, -reception_prevalence_of_obesity, -population_vaccination_coverage_mmr_for_one_dose, -children_in_low_income_families_aged_5_to_10, -london) # selecting data to model
+```
+  
+```{r}
+# Inital Linear Model including all the quantitative predictors except MMR Vaccination coverage, Reception obesity levels and low income families
+Model1 <- lm(year_6_prevalence_of_obesity ~ . - areaname, data = model_data)
+```
+**VIF (Variance Inflation Factor) Test for multicolinearity**  
+  
+- Values of 1 means that the predictor is not correlated with the other k predictors  
+- Values exceeding 4 warrants further investigation  
+- Values exceeding 10 are signs of serious multicolinearity  
+
+```{r}
+# VIF of Model 1 - Check for multicolinearity
+car::vif(Model1)
+```
+  
+### Model Selection Methods
+
+#### Stepwise
+**Forwards and Backwards Stepwise Regression using AIC**  
+  
+- Forwards Stepwise Regression starts with the null model and adds one variable at a time, measuring fit using AIC  
+- Backwards Stepwise Regression starts with the full model and removes one variable at a time, measuring fit using AIC  
+- AIC (Akaike information criterion) is a measure of fit of the model which estimates the relative amount of information lost while penalising the complexity of the model
+- The function stepAIC (from the package MASS) calculates the AIC values from performing backwards and forwards stepwise regression and chooses the model with the lowest AIC value
+```{r}
+# Stepwise model selection using AIC
+MASS::stepAIC(Model1, direction = "both", trace = FALSE)
+```
+- This model has 6 predictors:
+    + Deprivation score
+    + Obesity at 18+
+    + % of physically active adults
+    + Admissions for respiratory tract infections
+    + % of population aged 0-15
+    + Inner London Indicator  
+
+**Exhaustive Search using regsubsets for the best model with 1-16 predictors**  
+  
+- Regsubsets is another way of selecting predictors.  
+- It uses an exhaustive search method which means that it calculates the best model for each number of predictors by testing all of the possible combinations of the predictors  
+- This is measured by BIC which works in the same way as AIC however penalises complex models more than AIC does  
+```{r}
+# performring model selection using regsubsets and an exhaustive search 
+# This finds the best model for each number of predictors between 1 and 17 (full model)
+aoutput <- (regsubsets(year_6_prevalence_of_obesity ~ . - areaname, data = model_data, nvmax = 17, method = "exhaustive"))
+a <- summary(aoutput)
+```
+**Plotting BIC for each model** 
+  
+- Models can be selected by specifying the number of predictors, or selecting the model with the number of predictors that gives the lowest value of BIC  
+```{r}
+# BIC plot for models selected using regsubsets
+plot(a$bic)
+```
+  
+**Selecting the 6 variable model using regsubsets output**  
+- The 6 variable model gave the lowest BIC value
+- The predictive variables chosen in the 6 variable model can be found by selecting the variables with a * in row 6
+```{r}
+# summary of output produced by regsubsets
+summary(aoutput)
+```
+**Fitting the chosen model**  
+```{r}
+# Fitting the model chosen using regsubsets minimising BIC
+modely6 <- lm(year_6_prevalence_of_obesity ~ deprivation_score + `percentage_of_the_total_resident_population_who_are_0-15_years_of_age` + inner_london + obesity_qof_prevalence + admissions_for_respiratory_tract_infections_in_infants_aged_under_1_year + percentage_of_physically_active_adults, data = model_data)
+# Model Summary
+summary(modely6)
+```
+**Chosen Indicators**  
+1. deprivation score - positive correlation  
+The more deprived an area is, the higher their levels of year 6 obesity  
+2. percentage of the total resident population aged 0-15 - positive correlation  
+The larger the percentage of children aged 0-15 living in a local area, the higher their levels of year 6 obesity  
+3. 'London Factor' - positive correlation  
+If a child is living in London, they are more likely to be obese  
+4. Physically active adults - negative correlation  
+The larger the percentage of physically active adults, the lower the levels of childhood obesity 
+5. Admissions for respiratory tract infections in infants under 1 year old - negative correlation  
+The higher the admissions for respiratory tract infections in infants in a local area, the lower the levels of childhood obesity  
+6. % Obesity 18+ - positive correlation  
+The larger the percentage of obese adults in the local area, the higher the level of year 6 obesity in the same area  
+  
+*Additional Indicators using AIC:*  
+  
+- These are the same indicators chosen with stepwise AIC 
+
+```{r}
+# Model plots
+(plot(modely6))
+```
+**Areas of Interest**   
+1 area that the model is significantly overfitting (predicting higher levels of obesity than the true value)  
+- 72: Barnsley
+2 areas the model is significantly underfitting
+- 82: Dudley
+- 116: Merton
+
+## Reception Model
+
+```{r}
+# Selecting the Data
+model_data2 <- select(EDA_Data, -parentname, -year_6_prevalence_of_obesity, -children_in_low_income_families_aged_5_to_10, -population_vaccination_coverage_mmr_for_one_dose, -london)
+```
+
+```{r}
+# Fitting the full model
+Model3 <- lm(reception_prevalence_of_obesity ~ . - areaname, data = model_data2)
+```
+
+### Stepwise Regression
+  
+```{r}
+# Model selection using forwards/backwards stepwise regression and AIC
+MASS::stepAIC(Model3, direction = "both", trace = FALSE)
+```
+The Stepwise Selection Model has 8 predictors:  
+  
+  - Deprivation Score
+  - Social Health Needs
+  - Obesity 18+
+  - Physically Active Adults
+  - Breastfeeding at birth
+  - Admissions for respiratory tract infections 
+  - % of population aged 0-15
+  - Inner London Indicator
+
+### Regsubsets
+```{r}
+# exhaustive search using regsubsets 
+aoutput2 <- (regsubsets(reception_prevalence_of_obesity ~ . - areaname, data = model_data2, nvmax = 16, method = "exhaustive"))
+# summary of the output, use this to select models
+a2 <- summary(aoutput2)
+```
+
+**Plotting BIC**  
+```{r}
+# BIC Values for the best model with each number of variables
+plot(a2$bic)
+```
+  
+**Chosen Variables**  
+1. Deprivation Score - Positive relationship  
+2. London Factor - Positive relationship  
+3. % of population aged 0-15
+4. Breastfeeding at Birth
+5. Obesity in Adults 18+ - Positive relationship 
+6. Admissions for Respiratory Tract Infections
+*using AIC, additional 2 variables:*  
+  
+- Social Health Needs - positive relationship  
+- Physically active Adults
+
+
+**Chosen Model**
+```{r}
+# Reception Model Chosen with regsubsets using BIC
+Model4 <- lm(reception_prevalence_of_obesity ~ deprivation_score + obesity_qof_prevalence + inner_london + `percentage_of_the_total_resident_population_who_are_0-15_years_of_age` + breastfeeding_initiation + admissions_for_respiratory_tract_infections_in_infants_aged_under_1_year, data = model_data2)
+summary(Model4)
+```
+
+```{r}
+# model plots
+plot(Model4)
+```
+  
+**Points of interest**  
+38: Reading  
+102: Enfield  
+112: Richmond upon Thames  
+
+
+## Comparing Y6 and Reception 
+
+**Reception**  
+1. Deprivation Score  
+2. Inner London Indicator  
+3. % of population aged 0-15  
+4. Breastfeeding at Birth  
+5. Obesity in Adults 18+ - Positive relationship  
+6. Admissions for Respiratory Tract Infections  
+  
+**Year 6**  
+1. deprivation score   
+2. % of population aged 0-15  
+3. Inner London Indicator    
+4. Physically active adults  
+5. Admissions for Respiratory Tract Infections  
+6. Admissions for Respiratory Tract Infections  
+  
+  * The models contain laregely the same indicators  
+  * The reception model contains the variable breastfeeding at birth which does not feature in the year 6 model  
+  * The year 6 model contains the variable physically active adults, which does not feature in the reception model  
+  * The AIC Reception model also includes the variable Social Health Needs that does not feature in either of the Year 6 models.  
+  
+
+The Reception model has an adjusted r squared value of 0.559 for the 6 variable model where as the year 6 model has an adjusted r squared value of 0.762 for the same number of variables. This shows that the Year 6 model is fitting the data much better than the reception model.
+
+# Evaluation
+
+- Would like to repeat the model for 2016/17 Y6 and 2009/10 Reception and see if time makes a difference
+  
+- 'ignoring' time when selecting the explanatory variables (how much of a time delay is there in certain variables affecting others?)
+
+- Introduce more predictor variables or different time choices more suited to modelling reception children
+  
+- More/different predictors, not just ones on fingertips (e.g. number of fast food resturants in local area, average shopping basket, london affect)
+  
+- Compare specific children through time
